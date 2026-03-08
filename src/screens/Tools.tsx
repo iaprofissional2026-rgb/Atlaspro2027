@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Globe, Edit3, Camera, ArrowRight, Check, Copy, Youtube } from 'lucide-react';
+import { Globe, Edit3, Camera, ArrowRight, Check, Copy, Youtube, Image as ImageIcon, X, Upload } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -16,6 +16,9 @@ export function Tools() {
   const [outputText, setOutputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedImageMimeType, setSelectedImageMimeType] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const tools = [
     {
@@ -48,11 +51,23 @@ export function Tools() {
     },
   ];
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setSelectedImage(reader.result as string);
+      setSelectedImageMimeType(file.type);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleToolAction = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() && !selectedImage) return;
 
     if (activeTool === 'youtube') {
-      // Check if it's a URL or a search term
+      // Check if it's a URL
       const youtubeUrlMatch = inputText.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
       if (youtubeUrlMatch) {
         setYoutubeVideoId(youtubeUrlMatch[1]);
@@ -72,16 +87,32 @@ export function Tools() {
     } else if (activeTool === 'reviewer') {
       prompt = `Atue como um revisor profissional. Corrija erros gramaticais, melhore a fluidez e o tom do seguinte texto, mantendo a intenção original. Forneça apenas o texto revisado. Texto: "${inputText}"`;
     } else if (activeTool === 'reader') {
-      prompt = `Extraia e explique o texto da imagem descrita ou do texto fornecido. Como não posso enviar imagens diretamente aqui na interface de demonstração, analise este texto como se fosse extraído de um documento: "${inputText}"`;
+      prompt = inputText.trim() 
+        ? `Analise esta imagem e responda à seguinte pergunta/instrução: ${inputText}`
+        : `Descreva detalhadamente o que você vê nesta imagem e extraia qualquer texto visível nela.`;
     } else if (activeTool === 'youtube') {
-      prompt = `O usuário quer assistir um vídeo sobre: "${inputText}". Use a busca do Google para encontrar o ID de um vídeo relevante no YouTube e responda APENAS com o título do vídeo e uma breve descrição de por que ele é bom. Eu cuidarei da abertura do player.`;
+      prompt = `O usuário quer assistir um vídeo sobre: "${inputText}". Use a busca do Google para encontrar o ID de um vídeo relevante no YouTube e responda com o título do vídeo e uma breve descrição. Tente encontrar vídeos em Português do Brasil.`;
     }
 
     try {
-      const response = await generateToolResponse(prompt, user?.memory || '', user?.name || '', persona);
+      const imagePayload = selectedImage && selectedImageMimeType ? {
+        data: selectedImage.split(',')[1],
+        mimeType: selectedImageMimeType
+      } : undefined;
+
+      const response = await generateToolResponse(prompt, user?.memory || '', user?.name || '', persona, imagePayload);
       setOutputText(response);
+
+      // Special handling for YouTube tool to try and open the player if a video ID is found in the response
+      if (activeTool === 'youtube') {
+        const idMatch = response.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|videoId\s*[:=]\s*|["'])([a-zA-Z0-9_-]{11})(?:["']|\s|$)/i);
+        if (idMatch && idMatch[1]) {
+          setYoutubeVideoId(idMatch[1]);
+          setIsYoutubePlayerVisible(true);
+        }
+      }
     } catch (error) {
-      setOutputText('Erro ao processar a solicitação. Verifique sua conexão.');
+      setOutputText('Erro ao processar a solicitação. Verifique sua conexão e chaves de API.');
     } finally {
       setIsLoading(false);
     }
@@ -159,19 +190,53 @@ export function Tools() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    {activeTool === 'reader' ? 'Descreva a imagem ou cole o texto' : 'Texto de entrada'}
+                    {activeTool === 'reader' ? 'Instruções opcionais para a imagem' : 'Texto de entrada'}
                   </label>
                   <textarea
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     className="w-full h-32 p-3 bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-800 rounded-xl focus:ring-2 focus:ring-[var(--color-accent)] outline-none resize-none text-gray-900 dark:text-gray-100"
-                    placeholder="Digite ou cole aqui..."
+                    placeholder={activeTool === 'reader' ? 'Ex: O que está escrito neste documento?' : 'Digite ou cole aqui...'}
                   />
                 </div>
 
+                {activeTool === 'reader' && (
+                  <div className="space-y-3">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Imagem para análise
+                    </label>
+                    {selectedImage ? (
+                      <div className="relative rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800">
+                        <img src={selectedImage} alt="Preview" className="w-full h-48 object-cover" />
+                        <button 
+                          onClick={() => setSelectedImage(null)}
+                          className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full py-8 border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-xl flex flex-col items-center justify-center text-gray-500 hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-all"
+                      >
+                        <Upload className="w-8 h-8 mb-2" />
+                        <span className="text-sm font-medium">Clique para selecionar imagem</span>
+                      </button>
+                    )}
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleImageSelect} 
+                      accept="image/*" 
+                      className="hidden" 
+                    />
+                  </div>
+                )}
+
                 <button
                   onClick={handleToolAction}
-                  disabled={!inputText.trim() || isLoading}
+                  disabled={(!inputText.trim() && !selectedImage) || isLoading}
                   className="w-full py-3 accent-bg text-white rounded-xl font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex justify-center items-center"
                 >
                   {isLoading ? (

@@ -394,56 +394,147 @@ Data: ${new Date().toLocaleString('pt-BR')}`;
 
 export async function summarizeYouTubeVideo(videoId: string, persona: 'Aura' | 'Atlas'): Promise<string> {
   const prompt = `Resuma este vídeo do YouTube (ID: ${videoId}). Seja detalhado e use o tom de ${persona}.`;
-  
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${getOpenRouterKey()}`,
-      'HTTP-Referer': APP_URL,
-      'X-Title': APP_NAME,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: currentModel,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 800
-    })
-  });
+  const platformApiKey = getGeminiApiKey();
+  const openRouterKey = getOpenRouterKey();
 
-  const json = await response.json();
-  return json.choices[0].message.content || 'Não foi possível resumir.';
+  if (openRouterKey) {
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openRouterKey}`,
+          'HTTP-Referer': APP_URL,
+          'X-Title': APP_NAME,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: currentModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1000
+        })
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        return json.choices[0].message.content || 'Não foi possível resumir.';
+      }
+    } catch (e) {
+      console.error('[Aura AI] OpenRouter summary failed:', e);
+    }
+  }
+
+  if (platformApiKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: platformApiKey });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      });
+      return response.text || 'Não foi possível resumir.';
+    } catch (e) {
+      console.error('[Aura AI] Gemini summary fallback failed:', e);
+    }
+  }
+
+  return 'Não foi possível resumir. Verifique suas chaves de API.';
 }
 
 export async function generateToolResponse(
   prompt: string,
   userMemory: string,
   userName: string,
-  persona: 'Aura' | 'Atlas'
+  persona: 'Aura' | 'Atlas',
+  image?: { data: string; mimeType: string }
 ): Promise<string> {
-  const systemPrompt = `${getSystemPrompt(persona, 'geral')}
+  const platformApiKey = getGeminiApiKey();
+  const openRouterKey = getOpenRouterKey();
+
+  // If image is provided, we MUST use Gemini SDK (OpenRouter vision support varies)
+  if (image && platformApiKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: platformApiKey });
+      const systemPrompt = `${getSystemPrompt(persona, 'geral')}
 Usuário: ${userName}
 Memória: ${userMemory || 'Nenhuma'}`;
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${getOpenRouterKey()}`,
-      'HTTP-Referer': APP_URL,
-      'X-Title': APP_NAME,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: currentModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: prompt }
-      ],
-      max_tokens: 800
-    })
-  });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inlineData: { data: image.data, mimeType: image.mimeType } }
+          ]
+        }],
+        config: {
+          systemInstruction: systemPrompt
+        }
+      });
 
-  const json = await response.json();
-  return json.choices[0].message.content || 'Erro ao processar ferramenta.';
+      return response.text || 'Erro ao processar imagem.';
+    } catch (e) {
+      console.error('[Aura AI] Gemini vision tool response failed:', e);
+      return 'Erro ao processar imagem. Verifique sua chave Gemini.';
+    }
+  }
+
+  // Try OpenRouter first if key is available (for text-only)
+  if (openRouterKey && !image) {
+    try {
+      const systemPrompt = `${getSystemPrompt(persona, 'geral')}
+Usuário: ${userName}
+Memória: ${userMemory || 'Nenhuma'}`;
+
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openRouterKey}`,
+          'HTTP-Referer': APP_URL,
+          'X-Title': APP_NAME,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: currentModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt }
+          ],
+          max_tokens: 1000
+        })
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        return json.choices[0].message.content || 'Erro ao processar ferramenta.';
+      }
+    } catch (e) {
+      console.error('[Aura AI] OpenRouter tool response failed:', e);
+    }
+  }
+
+  // Fallback to Gemini SDK
+  if (platformApiKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: platformApiKey });
+      const systemPrompt = `${getSystemPrompt(persona, 'geral')}
+Usuário: ${userName}
+Memória: ${userMemory || 'Nenhuma'}`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          systemInstruction: systemPrompt
+        }
+      });
+
+      return response.text || 'Erro ao processar ferramenta.';
+    } catch (e) {
+      console.error('[Aura AI] Gemini tool response fallback failed:', e);
+    }
+  }
+
+  return 'Erro ao processar ferramenta. Verifique suas chaves de API.';
 }
 
 export async function generateImage(prompt: string): Promise<string> {
@@ -452,35 +543,43 @@ export async function generateImage(prompt: string): Promise<string> {
     return 'Desculpe, você precisa configurar uma chave da API do Google Gemini nas configurações para gerar imagens.';
   }
 
+  // Try 3.1 first (might fail if not paid)
   try {
     const ai = new GoogleGenAI({ apiKey: platformApiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-flash-image-preview',
-      contents: {
-        parts: [
-          {
-            text: prompt,
-          },
-        ],
-      },
+      contents: { parts: [{ text: prompt }] },
       config: {
-        imageConfig: {
-          aspectRatio: "1:1",
-          imageSize: "1K"
-        }
+        imageConfig: { aspectRatio: "1:1", imageSize: "1K" }
       },
     });
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
-        const base64EncodeString: string = part.inlineData.data;
-        return `![Imagem Gerada](data:image/png;base64,${base64EncodeString})`;
+        return `![Imagem Gerada](data:image/png;base64,${part.inlineData.data})`;
       }
     }
-    
-    return 'Desculpe, não foi possível gerar a imagem. O modelo não retornou dados de imagem válidos.';
+  } catch (error) {
+    console.warn('[Aura AI] Gemini 3.1 Image generation failed, trying 2.5 fallback...', error);
+  }
+
+  // Fallback to 2.5 (Free)
+  try {
+    const ai = new GoogleGenAI({ apiKey: platformApiKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: prompt }] }
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `![Imagem Gerada](data:image/png;base64,${part.inlineData.data})`;
+      }
+    }
   } catch (error: any) {
-    console.error('[Aura AI] Image generation error:', error);
+    console.error('[Aura AI] Image generation final fallback failed:', error);
     return `Desculpe, ocorreu um erro ao gerar a imagem: ${error.message}`;
   }
+
+  return 'Desculpe, não foi possível gerar a imagem.';
 }
